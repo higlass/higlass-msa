@@ -1,0 +1,28 @@
+{
+  "name": "higlass-msa",
+  "version": "0.0.1",
+  "private": true,
+  "description": "HiGlass plugin track for multiple sequence alignments, rendered from tiled data textures",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "spike": "node scripts/spike-bench.mjs",
+    "test": "node --test \"test/*.test.js\"",
+    "test:browser": "node scripts/test-vertical-zoom.mjs && node scripts/test-row-labels.mjs && node scripts/test-label-importance.mjs"
+  },
+  "dependencies": {
+    "higlass": "2.3.5",
+    "higlass-register": "0.3.0",
+    "pixi.js": "^6.5.10",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.64.1",
+    "vite": "^6.0.0"
+  }
+}

@@ -1,0 +1,4 @@
+node_modules/
+dist/
+spike-output/
+.claude/settings.local.json
