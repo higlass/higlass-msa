@@ -1,4 +1,4 @@
-import { BLOCK_ROWS, TILE_BINS, fillOverview, rawTile, resolutions } from './field.js';
+import { BLOCK_ROWS, TILE_BINS, overviewTile, rawTile, resolutions } from './field.js';
 
 self.onmessage = async ({ data: { id, tileIds, columns, rows, latencyMs = 0 } }) => {
   if (latencyMs) await new Promise((resolve) => setTimeout(resolve, latencyMs));
@@ -19,23 +19,24 @@ self.onmessage = async ({ data: { id, tileIds, columns, rows, latencyMs = 0 } })
       continue;
     }
 
-    let data;
+    let payload;
     let kind;
     if (resolution === 1) {
       const tile = rawTile(startColumn, firstRow, height);
       tile.fill(columns);
-      data = tile.data;
+      payload = { data: tile.data };
       kind = 'raw';
     } else {
-      data = new Uint8Array(TILE_BINS * height * 4);
-      fillOverview(data, startColumn, resolution, firstRow, height, columns);
+      const tile = overviewTile(startColumn, resolution, firstRow, height);
+      tile.fill(columns);
+      payload = { mean: tile.mean, peak: tile.peak, stats: tile.stats };
       kind = 'overview';
     }
-    transfer.push(data.buffer);
+    for (const array of Object.values(payload)) transfer.push(array.buffer);
     tiles[tileId] = {
       tilePositionId: tileId,
       kind,
-      data,
+      ...payload,
       width: TILE_BINS,
       height,
       validBins,

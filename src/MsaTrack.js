@@ -1,5 +1,7 @@
+import { binSmoothing, mismatchEmphasis } from './columnView.js';
 import { cellAt, tooltipHtml } from './hover.js';
 import { buildLabelIndex } from './labelLevels.js';
+import { PALETTE_RGB, SYMBOLS } from './palette.js';
 import { MAX_LABEL_BOX_PX, labelBoxPx, labelFontSize, labelText, labelY, visibleLabels } from './rowLabels.js';
 import { clampOffset, letterAlpha, panRows, visibleRows, zoomRows } from './rowView.js';
 import { OVERVIEW_FRAGMENT, RAW_FRAGMENT, VERTEX } from './shaders.js';
@@ -11,13 +13,10 @@ const LABEL_FONT_FAMILY = 'Menlo, Consolas, monospace';
 const LABEL_LAYER_Z = 1e6;
 const LABEL_BACKGROUND_ALPHA = 0.6;
 const LABEL_BACKGROUND_ALPHA_OVER_LETTERS = 0.96;
-const SYMBOLS = ['A', 'C', 'G', 'T', 'N', '-', '', ''];
 
-// Column = symbol, row 0 = matches consensus (pale), row 1 = differs (saturated).
-const PALETTE_RGB = [
-  [[214, 240, 214], [228, 236, 250], [250, 238, 210], [250, 222, 222], [232, 232, 232], [248, 248, 248], [255, 255, 255], [255, 255, 255]],
-  [[46, 160, 67], [40, 110, 220], [235, 150, 20], [215, 45, 45], [120, 120, 120], [248, 248, 248], [255, 255, 255], [255, 255, 255]],
-];
+/** Raw tiles hold one byte per cell; overview tiles hold two colors plus tooltip stats. */
+const tileBytes = (d) =>
+  d.kind === 'raw' ? d.data.byteLength : d.mean.byteLength + d.peak.byteLength + d.stats.byteLength;
 
 function makePalette(PIXI) {
   const bytes = new Uint8Array(8 * 2 * 4);
@@ -223,7 +222,7 @@ function createTrackClass(HGC) {
       let cellZoom = -1;
       for (const tile of Object.values(this.fetchedTiles)) {
         const d = tile.tileData;
-        if (!d?.data || d.z <= cellZoom) continue;
+        if (!d || d.error || d.z <= cellZoom) continue;
         const found = cellAt(d, column, row);
         if (found) {
           cell = found;
@@ -320,37 +319,47 @@ function createTrackClass(HGC) {
       return blocks;
     }
 
+    /** Sampling stays NEAREST: the overview shader interpolates along x itself. */
+    makeTileTexture(data, { width, height }, format) {
+      return new PIXI.BaseTexture(new PIXI.BufferResource(data, { width, height }), {
+        format,
+        type: PIXI.TYPES.UNSIGNED_BYTE,
+        scaleMode: PIXI.SCALE_MODES.NEAREST,
+        mipmap: PIXI.MIPMAP_MODES.OFF,
+        wrapMode: PIXI.WRAP_MODES.CLAMP,
+        alphaMode: PIXI.ALPHA_MODES.NPM,
+      });
+    }
+
     initTile(tile) {
       const d = tile.tileData;
       if (!d || d.error) return;
       const isRaw = d.kind === 'raw';
-      const base = new PIXI.BaseTexture(
-        new PIXI.BufferResource(d.data, { width: d.width, height: d.height }),
-        {
-          format: isRaw ? this.singleChannelFormat : PIXI.FORMATS.RGBA,
-          type: PIXI.TYPES.UNSIGNED_BYTE,
-          scaleMode: PIXI.SCALE_MODES.NEAREST,
-          mipmap: PIXI.MIPMAP_MODES.OFF,
-          wrapMode: PIXI.WRAP_MODES.CLAMP,
-          alphaMode: PIXI.ALPHA_MODES.NPM,
-        },
-      );
+      tile.msaTextures = isRaw
+        ? [this.makeTileTexture(d.data, d, this.singleChannelFormat)]
+        : [
+            this.makeTileTexture(d.mean, d, PIXI.FORMATS.RGBA),
+            this.makeTileTexture(d.peak, d, PIXI.FORMATS.RGBA),
+          ];
       const shader = PIXI.Shader.from(VERTEX, isRaw ? RAW_FRAGMENT : OVERVIEW_FRAGMENT, {
-        uData: base,
+        uData: tile.msaTextures[0],
+        uMean: tile.msaTextures[0],
+        uPeak: tile.msaTextures[tile.msaTextures.length - 1],
         uPalette: this.palette,
         uAtlas: this.atlas,
         uDims: new Float32Array([d.width, d.height]),
         uUvScale: new Float32Array([d.validBins / d.width, 1]),
         uCellPx: new Float32Array([1, 1]),
         uLetterAlpha: 0,
+        uEmphasis: 0,
+        uSmooth: 0,
       });
       tile.msaMesh = new PIXI.Mesh(this.quad, shader);
-      tile.msaTexture = base;
       tile.graphics.addChild(tile.msaMesh);
       tile.graphics.zIndex = d.z;
 
       stats.tilesInitialized++;
-      stats.liveTextureBytes += d.data.byteLength;
+      stats.liveTextureBytes += tileBytes(d);
       stats.zoomLevelsSeen[d.z] = d.resolution;
       if (!/^\d+\.\d+\.\d+$/.test(tile.remoteId)) stats.badTileIds.push(tile.remoteId);
       this.positionTile(tile);
@@ -365,20 +374,27 @@ function createTrackClass(HGC) {
       const mesh = tile.msaMesh;
       mesh.position.set(x0, d.rowBlock * BLOCK_ROWS * rowPx + this.rowView.offset);
       mesh.scale.set(x1 - x0, d.height * rowPx);
+      const pxPerBin = (x1 - x0) / d.validBins;
       if (d.kind === 'raw') {
-        const pxPerCell = (x1 - x0) / d.validBins;
-        mesh.shader.uniforms.uCellPx[0] = pxPerCell;
+        mesh.shader.uniforms.uCellPx[0] = pxPerBin;
         mesh.shader.uniforms.uCellPx[1] = rowPx;
-        mesh.shader.uniforms.uLetterAlpha = letterAlpha(pxPerCell, rowPx);
+        mesh.shader.uniforms.uLetterAlpha = letterAlpha(pxPerBin, rowPx);
+      } else {
+        // Columns per pixel barely changes when HiGlass steps to the next zoom level,
+        // because resolution and bin width step together. Driving the emphasis from it
+        // instead of from the level keeps the look continuous across the step.
+        mesh.shader.uniforms.uEmphasis = mismatchEmphasis(d.resolution / pxPerBin);
+        mesh.shader.uniforms.uSmooth = binSmoothing(pxPerBin);
       }
     }
 
     destroyTile(tile) {
       if (!tile?.msaMesh) return;
       stats.tilesDestroyed++;
-      stats.liveTextureBytes -= tile.tileData.data.byteLength;
+      stats.liveTextureBytes -= tileBytes(tile.tileData);
       tile.msaMesh.destroy();
-      tile.msaTexture.destroy();
+      for (const texture of tile.msaTextures) texture.destroy();
+      tile.msaTextures = [];
       tile.msaMesh = null;
     }
 

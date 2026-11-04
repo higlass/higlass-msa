@@ -21,14 +21,14 @@ export function cellAt(tile, column, row) {
     return { kind: 'raw', column: firstColumn, symbol: SYMBOL_NAMES[byte & 7], mismatch: (byte & 8) !== 0 };
   }
 
-  const i = (y * tile.width + x) * 4;
+  const bin = y * tile.width + x;
   return {
     kind: 'overview',
     firstColumn,
     lastColumn,
-    nonGap: tile.data[i] / 255,
-    mismatch: tile.data[i + 1] / 255,
-    peak: tile.data[i + 2] / 255,
+    nonGap: tile.stats[bin * 2] / 255,
+    mismatch: tile.stats[bin * 2 + 1] / 255,
+    peak: tile.peak[bin * 4 + 3] / 255,
   };
 }
 

@@ -40,15 +40,30 @@ void main() {
   gl_FragColor = vec4(color, 1.0);
 }`;
 
-// Overview levels: RGBA8 per cell = non-gap fraction, mean mismatch, peak mismatch, dominant symbol.
+// Overview levels: two RGBA8 textures of baked raw-level colors, the bin's mean color
+// and the same bin at its peak mismatch rate. uEmphasis slides between them so rare
+// mismatches survive aggregation, and reaches 0 where the raw level takes over.
+//
+// Bins aggregate columns only; rows are never merged. So neighbours are blended along
+// x by hand rather than with a LINEAR sampler, which would also smear sequences into
+// each other. uSmooth of 1 is linear, 0 is hard-edged.
 export const OVERVIEW_FRAGMENT = `
 precision highp float;
 varying vec2 vUv;
-uniform sampler2D uData;
+uniform sampler2D uMean;
+uniform sampler2D uPeak;
+uniform vec2 uDims;
+uniform float uEmphasis;
+uniform float uSmooth;
 void main() {
-  vec4 t = texture2D(uData, vUv);
-  vec3 color = mix(vec3(0.97), vec3(0.80, 0.84, 0.90), t.r);
-  float heat = clamp(max(sqrt(t.g), t.b * 0.9), 0.0, 1.0);
-  color = mix(color, vec3(0.80, 0.10, 0.12), heat);
-  gl_FragColor = vec4(color, 1.0);
+  float x = vUv.x * uDims.x - 0.5;
+  float left = floor(x);
+  float du = 1.0 / uDims.x;
+  vec2 uvA = vec2((left + 0.5) * du, vUv.y);
+  vec2 uvB = vec2((left + 1.5) * du, vUv.y);
+  float f = x - left;
+  float t = clamp(0.5 + (f - 0.5) / max(uSmooth, 0.001), 0.0, 1.0);
+  vec3 mean = mix(texture2D(uMean, uvA).rgb, texture2D(uMean, uvB).rgb, t);
+  vec3 peak = mix(texture2D(uPeak, uvA).rgb, texture2D(uPeak, uvB).rgb, t);
+  gl_FragColor = vec4(mix(mean, peak, uEmphasis), 1.0);
 }`;

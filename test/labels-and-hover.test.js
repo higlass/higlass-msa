@@ -141,9 +141,12 @@ test('cellAt returns null outside the tile', () => {
 });
 
 test('cellAt reports the column range of an overview bin', () => {
-  const data = new Uint8Array(256 * 4 * 4);
-  data.set([255, 51, 102, 0], (1 * 256 + 2) * 4);
-  const tile = { kind: 'overview', data, width: 256, height: 4, validBins: 256, startColumn: 1024, resolution: 16, rowBlock: 0 };
+  const bin = 1 * 256 + 2;
+  const peak = new Uint8Array(256 * 4 * 4);
+  const stats = new Uint8Array(256 * 4 * 2);
+  peak.set([0, 0, 0, 102], bin * 4);
+  stats.set([255, 51], bin * 2);
+  const tile = { kind: 'overview', peak, stats, width: 256, height: 4, validBins: 256, startColumn: 1024, resolution: 16, rowBlock: 0 };
   const cell = cellAt(tile, 1024 + 2 * 16 + 7, 1);
   assert.equal(cell.firstColumn, 1056);
   assert.equal(cell.lastColumn, 1071);
