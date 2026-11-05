@@ -2,6 +2,7 @@ import { TILE_BINS, resolutions, rowName } from './field.js';
 
 const stats = (window.__msaFetchStats = window.__msaFetchStats || {
   requests: 0,
+  orderRequests: 0,
   tileIds: [],
   generationMs: [],
 });
@@ -13,11 +14,11 @@ class SyntheticFetcher {
     this.pending = new Map();
     this.nextId = 0;
     this.worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
-    this.worker.onmessage = ({ data: { id, tiles, generationMs } }) => {
+    this.worker.onmessage = ({ data: { id, kind, tiles, order, generationMs } }) => {
       stats.generationMs.push(generationMs);
-      const receivedTiles = this.pending.get(id);
+      const resolve = this.pending.get(id);
       this.pending.delete(id);
-      receivedTiles(tiles);
+      resolve(kind === 'order' ? order : tiles);
     };
   }
 
@@ -43,7 +44,23 @@ class SyntheticFetcher {
     stats.tileIds.push(...tileIds);
     this.pending.set(id, receivedTiles);
     const { columns, rows, latencyMs } = this.dataConfig;
-    this.worker.postMessage({ id, tileIds, columns, rows, latencyMs });
+    this.worker.postMessage({ id, kind: 'tiles', tileIds, columns, rows, latencyMs });
+  }
+
+  /**
+   * The row order the tiles of `sortBy` are built with, as order[displayRow] =
+   * sourceRow. The track needs it for everything it draws per row itself: names,
+   * labels and tooltips. A data source without this method cannot sort, and the track
+   * then offers no sort menu item.
+   */
+  rowOrder(sortBy) {
+    const { columns, rows, latencyMs } = this.dataConfig;
+    const id = this.nextId++;
+    stats.orderRequests++;
+    return new Promise((resolve) => {
+      this.pending.set(id, resolve);
+      this.worker.postMessage({ id, kind: 'order', sortBy, columns, rows, latencyMs });
+    });
   }
 }
 

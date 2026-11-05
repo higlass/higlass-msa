@@ -5,6 +5,7 @@ import * as hglib from 'higlass';
 import '../src/index.js';
 
 // URL parameters: ?columns=1000000&rows=1000&rowHeight=1&height=1000&latencyMs=0
+//                 &sortColumn=500000&editable=1   (editable=1 enables the right-click menu)
 const params = new URLSearchParams(location.search);
 const num = (key, fallback) => (params.has(key) ? +params.get(key) : fallback);
 const columns = num('columns', 1_000_000);
@@ -34,7 +35,10 @@ PIXI.Renderer.prototype.render = function timedRender(...args) {
 };
 
 const viewConfig = {
-  editable: false,
+  // HiGlass only shows the right-click track menu, which is where row sorting lives,
+  // when the view is editable (TiledPlot.isTrackMenuDisabled). Off by default here so
+  // the demo has no editing chrome around the track.
+  editable: params.get('editable') === '1',
   zoomFixed: false,
   views: [
     {
@@ -52,7 +56,12 @@ const viewConfig = {
             type: 'msa',
             height,
             data: { type: 'msa-synthetic', columns, rows, latencyMs: num('latencyMs', 0) },
-            options: { rowHeight, firstRow: num('firstRow', 0), rowLabelImportance: params.get('labelImportance') ?? 'length' },
+            options: {
+              rowHeight,
+              firstRow: num('firstRow', 0),
+              rowLabelImportance: params.get('labelImportance') ?? 'length',
+              sortByBase: params.has('sortColumn') ? { column: num('sortColumn', 0) } : null,
+            },
           },
         ],
       },

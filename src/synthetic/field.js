@@ -8,6 +8,7 @@
 // job of the real builder.
 
 import { GAP_RGB, GAP_SYMBOL, MATCH_RGB, MISMATCH_MEAN_RGB, MISMATCH_RGB } from '../palette.js';
+import { sourceRow } from '../sortRows.js';
 
 export const TILE_BINS = 256;
 export const BLOCK_ROWS = 256;
@@ -54,9 +55,14 @@ export function resolutions(columns) {
   return out;
 }
 
-export function rawTile(startColumn, firstRow, nRows) {
+/**
+ * A tile covers display rows [firstRow, firstRow + nRows). `order`, when given, says
+ * which source row each display row shows; without it a display row is its own source
+ * row. Every fill below reads its cells through it, which is all row sorting is.
+ */
+export function rawTile(startColumn, firstRow, nRows, order = null) {
   const data = new Uint8Array(TILE_BINS * nRows);
-  return { data, fill: (columns) => fillRaw(data, startColumn, firstRow, nRows, columns) };
+  return { data, fill: (columns) => fillRaw(data, startColumn, firstRow, nRows, columns, order) };
 }
 
 /**
@@ -70,7 +76,7 @@ export function rawTile(startColumn, firstRow, nRows) {
  * which is the goal, but rare mismatches average into invisibility. `peak` is the
  * other end of the same color ramp, and the shader fades between them with zoom.
  */
-export function overviewTile(startColumn, resolution, firstRow, nRows) {
+export function overviewTile(startColumn, resolution, firstRow, nRows, order = null) {
   const mean = new Uint8Array(TILE_BINS * nRows * 4);
   const peak = new Uint8Array(TILE_BINS * nRows * 4);
   const stats = new Uint8Array(TILE_BINS * nRows * 2);
@@ -79,7 +85,7 @@ export function overviewTile(startColumn, resolution, firstRow, nRows) {
     peak,
     stats,
     fill: (columns) =>
-      fillOverview({ mean, peak, stats }, startColumn, resolution, firstRow, nRows, columns),
+      fillOverview({ mean, peak, stats }, startColumn, resolution, firstRow, nRows, columns, order),
   };
 }
 
@@ -96,9 +102,16 @@ function cellByte(r, c, base, columns) {
 
 const cellRgb = (byte) => (byte & 8 ? MISMATCH_RGB : MATCH_RGB)[byte & 7];
 
-function fillRaw(data, startColumn, firstRow, nRows, columns) {
+/** The symbol each row carries at one column, which is what row sorting groups by. */
+export function columnSymbols(column, rows, columns) {
+  const symbols = new Uint8Array(rows);
+  for (let r = 0; r < rows; r++) symbols[r] = cellByte(r, column, rowRate(r), columns) & 7;
+  return symbols;
+}
+
+function fillRaw(data, startColumn, firstRow, nRows, columns, order) {
   for (let y = 0; y < nRows; y++) {
-    const r = firstRow + y;
+    const r = sourceRow(order, firstRow + y);
     const base = rowRate(r);
     for (let x = 0; x < TILE_BINS; x++) {
       data[y * TILE_BINS + x] = cellByte(r, startColumn + x, base, columns);
@@ -114,18 +127,18 @@ export const EXACT_RESOLUTION = 4;
 const channel = (nonGap, match, differ, rate, gap) =>
   Math.round(nonGap * (match + (differ - match) * rate) + (1 - nonGap) * gap);
 
-function fillOverview(out, startColumn, resolution, firstRow, nRows, columns) {
+function fillOverview(out, startColumn, resolution, firstRow, nRows, columns, order) {
   const fill = resolution <= EXACT_RESOLUTION ? fillOverviewExact : fillOverviewModelled;
-  fill(out, startColumn, resolution, firstRow, nRows, columns);
+  fill(out, startColumn, resolution, firstRow, nRows, columns, order);
 }
 
 /**
  * Averages the real cells. The bin is then honest about its own mismatch rate, so
  * there is nothing to exaggerate and the peak color is the mean color.
  */
-function fillOverviewExact({ mean, peak, stats }, startColumn, resolution, firstRow, nRows, columns) {
+function fillOverviewExact({ mean, peak, stats }, startColumn, resolution, firstRow, nRows, columns, order) {
   for (let y = 0; y < nRows; y++) {
-    const r = firstRow + y;
+    const r = sourceRow(order, firstRow + y);
     const base = rowRate(r);
     for (let x = 0; x < TILE_BINS; x++) {
       const c0 = startColumn + x * resolution;
@@ -170,7 +183,7 @@ function hotOverlap(b, c0, width) {
   return Math.max(0, Math.min(c0 + width, s + HOT_WIDTH) - Math.max(c0, s));
 }
 
-function fillOverviewModelled({ mean, peak, stats }, startColumn, resolution, firstRow, nRows, columns) {
+function fillOverviewModelled({ mean, peak, stats }, startColumn, resolution, firstRow, nRows, columns, order) {
   const firstBucketOf = (c) => Math.floor(c / HOT_SPACING);
   const hotPerBin = [];
   // The consensus of a column is the same for every row, so both ends of a bin's
@@ -196,7 +209,7 @@ function fillOverviewModelled({ mean, peak, stats }, startColumn, resolution, fi
     }
   }
   for (let y = 0; y < nRows; y++) {
-    const r = firstRow + y;
+    const r = sourceRow(order, firstRow + y);
     const base = rowRate(r);
     for (let x = 0; x < TILE_BINS; x++) {
       const c0 = startColumn + x * resolution;

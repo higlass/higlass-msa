@@ -82,6 +82,24 @@ Each label now has its own background rather than sharing a full-height column, 
 
 HiGlass 2.3.5 calls `movedY` twice per mouse event during shift+drag, so a 48 px drag scrolled 96 px. `movedY` now ignores repeat calls within one event. Over 12 rounds of scrolling, the slowest frame fell from 135–245 ms to 32–69 ms. Slow frames still occur in the test suite, see below.
 
+## Row sorting
+
+Right-clicking a column offers "Sort rows by column N", the MSA counterpart of higlass-pileup's sort by base. The track option is `sortByBase: { column }`, and `null` is the order the data is in. The menu item appears only when the data source can sort, which it says by having a `rowOrder` method.
+
+**Where the sorting happens.** A tile holds 256 adjacent rows, and sorting can move a row into any other block, so only the data source can say which rows belong in a block. Pileup sorts inside its track because it already holds every read of the view; this track holds textures, so sorting goes to the source.
+
+**Tile ids carry the sort.** Remote ids go from `z.x.rowBlock` to `z.x.rowBlock.sortKey`, the key being `u` or `c<column>`. The tiles of two orders are then different tiles: changing the sort refetches, both orders stay in HiGlass's cache, and a tile still in flight from the old order can't be taken for a new one.
+
+**The order comes to the track too,** as `order[displayRow] = sourceRow` from `dataFetcher.rowOrder(sortBy)`, one request per sort rather than one per tile. The track draws the per-row text itself, so without it names, labels and tooltips would sit beside the wrong cells. Label levels are rebuilt when the order changes, because sorting changes which name is on which row.
+
+**Grouping.** Rows are grouped by their symbol at the column, in palette order, which puts the bases first and sinks gaps to the bottom. Rows inside a group keep the data's order. The order is always built from the data's order, so sorting a second column replaces the first sort instead of refining it.
+
+**Editable views only.** HiGlass hides the right-click track menu when the view config says `editable: false` (`TiledPlot.isTrackMenuDisabled`), so the demo takes `?editable=1`. `?sortColumn=N` opens straight into a sorted view.
+
+**Cost.** The synthetic source reads one cell per row to build an order and caches it per column, which is free at demo sizes. A real tileset would precompute it, and a sorted fetch reads scattered rows instead of one contiguous block.
+
+Covered by `test/sortRows.test.js` and `scripts/test-sort-by-base.mjs`, which drives the real right-click menu.
+
 ## Open questions
 - **Slow frames with labels on:** frames of 80–550 ms still appear in most test runs, more often with labels on, and redraw JS has peaked at about 150 ms. Some also appear with labels off, up to about 320 ms, so not all of this is label cost. They move between rounds, so it isn't first-use warm-up. Neither `willReadFrequently` nor a canvas readback made a clear difference. The p95 limit of 33 ms in `test-row-labels.mjs` fails intermittently because of this.
 

@@ -5,6 +5,7 @@ import { PALETTE_RGB, SYMBOLS } from './palette.js';
 import { MAX_LABEL_BOX_PX, labelBoxPx, labelFontSize, labelText, labelY, visibleLabels } from './rowLabels.js';
 import { clampOffset, letterAlpha, panRows, visibleRows, zoomRows } from './rowView.js';
 import { OVERVIEW_FRAGMENT, RAW_FRAGMENT, VERTEX } from './shaders.js';
+import { NO_SORT_KEY, sortKey, sourceRow } from './sortRows.js';
 
 const BLOCK_ROWS = 256;
 const DEFAULT_MAX_ROW_HEIGHT = 48;
@@ -73,6 +74,9 @@ function createTrackClass(HGC) {
         document.createElement('canvas').getContext('webgl2') ? PIXI.FORMATS.RED : PIXI.FORMATS.LUMINANCE;
       const { rowHeight = 1, firstRow = 0 } = options;
       this.rowView = { k: 1, offset: -firstRow * rowHeight };
+      this.rowOrder = null;
+      this.rowOrderKey = NO_SORT_KEY;
+      this.rowOrderVersion = 0;
       this.listenForShiftWheel(context);
 
       this.labelLayer = new PIXI.Container();
@@ -85,22 +89,32 @@ function createTrackClass(HGC) {
       this.labelRows = [];
     }
 
+    /** The data row a row of the track shows, which differs from it only when sorted. */
+    sourceRow(row) {
+      return sourceRow(this.rowOrder, row);
+    }
+
     rowName(row) {
-      return this.tilesetInfo.rowNames?.[row] ?? `Row ${row}`;
+      const source = this.sourceRow(row);
+      return this.tilesetInfo.rowNames?.[source] ?? `Row ${source}`;
     }
 
     /** Which rows may get labels, and in what order. Built once per importance source. */
     getLabelIndex(rows) {
       const { rowLabelImportance = 'none' } = this.options;
-      const source = `${rowLabelImportance},${rows}`;
+      // Sorting moves every name to a different row, so the levels are rebuilt with it.
+      const source = `${rowLabelImportance},${rows},${this.rowOrderVersion}`;
       if (source !== this.labelLevelsSource) {
         this.labelLevelsSource = source;
         this.labelDrawKey = null;
         this.labelPlaced = new Set();
+        const given = this.tilesetInfo.rowImportance;
         const importance =
           rowLabelImportance === 'length'
             ? Array.from({ length: rows }, (_, row) => [...this.rowName(row)].length)
-            : (this.tilesetInfo.rowImportance ?? new Uint8Array(rows));
+            : given
+              ? Array.from({ length: rows }, (_, row) => given[this.sourceRow(row)])
+              : new Uint8Array(rows);
         this.labelIndex = buildLabelIndex(importance);
       }
       return this.labelIndex;
@@ -232,6 +246,66 @@ function createTrackClass(HGC) {
       return tooltipHtml(this.rowName(row), cell);
     }
 
+    /** The column under a track position, or null if there isn't one. */
+    columnAt(trackX) {
+      if (!this.tilesetInfo || !this._xScale || Number.isNaN(trackX)) return null;
+      const column = Math.floor(this._xScale.invert(trackX));
+      return column >= 0 && column < this.tilesetInfo.shape[1] ? column : null;
+    }
+
+    /** Right-click menu: sorting the rows by the column clicked, as in higlass-pileup. */
+    contextMenuItems(trackX) {
+      const column = this.columnAt(trackX);
+      // Only the data source can reorder rows, because a tile is a block of adjacent
+      // rows and sorting moves rows between blocks. One that can't says so by having
+      // no rowOrder, and then there is nothing to offer.
+      if (column === null || typeof this.dataFetcher?.rowOrder !== 'function') return [];
+      const items = [
+        {
+          label: `Sort rows by column ${column.toLocaleString('en-US')}`,
+          onClick: (event, onTrackOptionsChanged) => onTrackOptionsChanged({ sortByBase: { column } }),
+        },
+      ];
+      if (sortKey(this.options.sortByBase) !== NO_SORT_KEY) {
+        items.push({
+          label: 'Clear row sorting',
+          onClick: (event, onTrackOptionsChanged) => onTrackOptionsChanged({ sortByBase: null }),
+        });
+      }
+      return items;
+    }
+
+    /**
+     * Picks up a change to the sortByBase option. The tiles take care of themselves:
+     * the sort key is part of their id, so changing it makes the tiles on screen the
+     * wrong ones and HiGlass fetches the right ones. What has to be fetched here is the
+     * order itself, for the names the track draws and reports.
+     */
+    updateRowOrder() {
+      const sortBy = this.options.sortByBase ?? null;
+      const key = sortKey(sortBy);
+      if (key === this.rowOrderKey) return;
+      this.rowOrderKey = key;
+      // The order in hand belongs to the tiles being replaced, so it goes now rather
+      // than when the new one lands: an unsorted name is better than a wrong one.
+      this.setRowOrder(null);
+      if (key === NO_SORT_KEY || typeof this.dataFetcher?.rowOrder !== 'function') return;
+      Promise.resolve(this.dataFetcher.rowOrder(sortBy)).then((order) => {
+        // Sorting may have changed again while this was in flight.
+        if (this.rowOrderKey === key) this.setRowOrder(order);
+      });
+    }
+
+    setRowOrder(order) {
+      if (!order && !this.rowOrder) return;
+      this.rowOrder = order?.length ? order : null;
+      this.rowOrderVersion++;
+      if (!this.tilesetInfo) return;
+      this.updateRowLabels();
+      this.draw();
+      this.animate();
+    }
+
     /**
      * HiGlass routes shift+wheel through d3-zoom, which emits nothing when the wheel
      * can't change the x scale. With zoomLimits set, that would block row zoom at
@@ -302,10 +376,16 @@ function createTrackClass(HGC) {
       this.rowView.offset = clampOffset(this.rowView.offset, this.rowPx, rows, height);
     }
 
-    /** HiGlass supplies [zoom, x]; we add the row block, giving remote ids of z.x.rowBlock. */
+    /**
+     * HiGlass supplies [zoom, x]; we add the row block and the sort key, giving remote
+     * ids of z.x.rowBlock.sortKey. The sort key is in the id so that the tiles of two
+     * orders are different tiles: changing the sort refetches, both orders stay cached,
+     * and a tile still in flight from the old order can't be mistaken for a new one.
+     */
     setVisibleTiles(tilePositions) {
       const blocks = this.visibleRowBlocks();
-      super.setVisibleTiles(tilePositions.flatMap((p) => blocks.map((r) => [...p, r])));
+      const key = sortKey(this.options.sortByBase);
+      super.setVisibleTiles(tilePositions.flatMap((p) => blocks.map((r) => [...p, r, key])));
     }
 
     visibleRowBlocks() {
@@ -361,7 +441,7 @@ function createTrackClass(HGC) {
       stats.tilesInitialized++;
       stats.liveTextureBytes += tileBytes(d);
       stats.zoomLevelsSeen[d.z] = d.resolution;
-      if (!/^\d+\.\d+\.\d+$/.test(tile.remoteId)) stats.badTileIds.push(tile.remoteId);
+      if (!/^\d+\.\d+\.\d+\.(u|c\d+)$/.test(tile.remoteId)) stats.badTileIds.push(tile.remoteId);
       this.positionTile(tile);
     }
 
@@ -426,9 +506,16 @@ function createTrackClass(HGC) {
       }
     }
 
+    /** The options can already carry a sort, so the order is wanted straight away. */
+    tilesetInfoReceived() {
+      super.tilesetInfoReceived();
+      this.updateRowOrder();
+    }
+
     rerender(options, force) {
       super.rerender(options, force);
       this.options = options;
+      this.updateRowOrder();
       if (this.tilesetInfo) {
         this.reclampRowView();
         this.refreshTiles();
@@ -461,7 +548,7 @@ MsaTrack.config = {
   datatype: ['msa'],
   orientation: '1d-horizontal',
   local: true,
-  availableOptions: ['rowHeight', 'maxRowHeight', 'firstRow', 'showRowLabels', 'rowLabelWidth', 'rowLabelImportance', 'showTooltip'],
+  availableOptions: ['rowHeight', 'maxRowHeight', 'firstRow', 'showRowLabels', 'rowLabelWidth', 'rowLabelImportance', 'showTooltip', 'sortByBase'],
   defaultOptions: {
     rowLabelImportance: 'none',
     rowHeight: 1,
@@ -469,5 +556,8 @@ MsaTrack.config = {
     firstRow: 0,
     showRowLabels: true,
     showTooltip: true,
+    // { column } groups the rows by their symbol at that alignment column; null is the
+    // order the data is in. Set from the right-click menu.
+    sortByBase: null,
   },
 };

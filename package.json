@@ -12,7 +12,7 @@
     "build": "vite build",
     "spike": "node scripts/spike-bench.mjs",
     "test": "node --test \"test/*.test.js\"",
-    "test:browser": "node scripts/test-vertical-zoom.mjs && node scripts/test-row-labels.mjs && node scripts/test-label-importance.mjs"
+    "test:browser": "node scripts/test-vertical-zoom.mjs && node scripts/test-row-labels.mjs && node scripts/test-label-importance.mjs && node scripts/test-sort-by-base.mjs"
   },
   "dependencies": {
     "higlass": "2.3.5",
