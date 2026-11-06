@@ -1,8 +1,8 @@
 // Deterministic stand-in for a real alignment, used to exercise rendering only.
 //
 // Raw tiles are per-cell samples of this field. Overview tiles up to EXACT_RESOLUTION
-// are aggregated from those same cells, so the first step out of the raw level is a
-// true downsample. Coarser levels are modelled from the field's own rates instead,
+// are aggregated from those same cells, so the first steps out of the raw level are
+// true downsamples. Coarser levels are modelled from the field's own rates instead,
 // because visiting every cell of a 4096-column bin is too slow to do in a demo
 // fetcher. Those levels therefore do NOT validate the aggregation rules; that is the
 // job of the real builder.
@@ -120,8 +120,20 @@ function fillRaw(data, startColumn, firstRow, nRows, columns, order) {
 }
 
 const SAMPLES = 8;
-/** Bins no wider than this are aggregated cell by cell, at that many times raw cost. */
-export const EXACT_RESOLUTION = 4;
+/**
+ * Bins no wider than this are aggregated cell by cell, at that many times raw cost:
+ * about 200 ms for a 256-row tile at 64, against 800 ms at 256. Modelled bins are a
+ * row rate times a column color, so they draw as a plaid with no cell detail; every
+ * level a user can reach from the raw view in a couple of steps must stay exact.
+ */
+export const EXACT_RESOLUTION = 64;
+/**
+ * Columns per bin past which the track warns that these colors are approximate. A
+ * tile server built with `clodius aggregate msa` is exact at every level.
+ */
+export const APPROXIMATE_ABOVE = 16;
+/** Width of the sub-bins `peak` picks its worst from, the same at every level. */
+const PEAK_WIDTH = 4;
 
 /** Mismatches sit on the matching background; gaps replace both. */
 const channel = (nonGap, match, differ, rate, gap) =>
@@ -133,10 +145,12 @@ function fillOverview(out, startColumn, resolution, firstRow, nRows, columns, or
 }
 
 /**
- * Averages the real cells. The bin is then honest about its own mismatch rate, so
- * there is nothing to exaggerate and the peak color is the mean color.
+ * Averages the real cells. `peak` is the average of the bin's worst PEAK_WIDTH-column
+ * sub-bin, also real cells, so rare mismatches stay findable once bins hold many
+ * columns. At resolution PEAK_WIDTH the sub-bin is the bin and peak equals mean.
  */
 function fillOverviewExact({ mean, peak, stats }, startColumn, resolution, firstRow, nRows, columns, order) {
+  const sub = Math.min(PEAK_WIDTH, resolution);
   for (let y = 0; y < nRows; y++) {
     const r = sourceRow(order, firstRow + y);
     const base = rowRate(r);
@@ -147,23 +161,59 @@ function fillOverviewExact({ mean, peak, stats }, startColumn, resolution, first
       let sum2 = 0;
       let gaps = 0;
       let mismatches = 0;
-      for (let s = 0; s < resolution; s++) {
-        const byte = cellByte(r, c0 + s, base, columns);
-        const rgb = cellRgb(byte);
-        sum0 += rgb[0];
-        sum1 += rgb[1];
-        sum2 += rgb[2];
-        if ((byte & 7) === GAP_SYMBOL) gaps++;
-        else if (byte & 8) mismatches++;
+      let worst = -1;
+      let worstRate = 0;
+      const worstRgb = [0, 0, 0];
+      for (let s0 = 0; s0 < resolution; s0 += sub) {
+        let p0 = 0;
+        let p1 = 0;
+        let p2 = 0;
+        let pGaps = 0;
+        let pMismatches = 0;
+        for (let s = s0; s < s0 + sub; s++) {
+          const byte = cellByte(r, c0 + s, base, columns);
+          const rgb = cellRgb(byte);
+          p0 += rgb[0];
+          p1 += rgb[1];
+          p2 += rgb[2];
+          if ((byte & 7) === GAP_SYMBOL) pGaps++;
+          else if (byte & 8) pMismatches++;
+        }
+        sum0 += p0;
+        sum1 += p1;
+        sum2 += p2;
+        gaps += pGaps;
+        mismatches += pMismatches;
+        const pNonGap = sub - pGaps;
+        const pRate = pNonGap > 0 ? pMismatches / pNonGap : 0;
+        // Ties go to the first sub-bin, so the choice does not depend on rounding.
+        if (pMismatches > worst) {
+          worst = pMismatches;
+          worstRate = pRate;
+          worstRgb[0] = p0 / sub;
+          worstRgb[1] = p1 / sub;
+          worstRgb[2] = p2 / sub;
+        }
       }
       const nonGap = resolution - gaps;
       const rate = nonGap > 0 ? mismatches / nonGap : 0;
       const i = (y * TILE_BINS + x) * 4;
-      mean[i] = peak[i] = Math.round(sum0 / resolution);
-      mean[i + 1] = peak[i + 1] = Math.round(sum1 / resolution);
-      mean[i + 2] = peak[i + 2] = Math.round(sum2 / resolution);
+      mean[i] = Math.round(sum0 / resolution);
+      mean[i + 1] = Math.round(sum1 / resolution);
+      mean[i + 2] = Math.round(sum2 / resolution);
       mean[i + 3] = 255;
-      peak[i + 3] = Math.round(255 * rate);
+      if (worst > 0) {
+        peak[i] = Math.round(worstRgb[0]);
+        peak[i + 1] = Math.round(worstRgb[1]);
+        peak[i + 2] = Math.round(worstRgb[2]);
+      } else {
+        // No mismatch anywhere: nothing to emphasise, so do not let a gap-heavy
+        // sub-bin pose as the peak.
+        peak[i] = mean[i];
+        peak[i + 1] = mean[i + 1];
+        peak[i + 2] = mean[i + 2];
+      }
+      peak[i + 3] = Math.round(255 * worstRate);
       const j = (y * TILE_BINS + x) * 2;
       stats[j] = Math.round((255 * nonGap) / resolution);
       stats[j + 1] = Math.round(255 * rate);

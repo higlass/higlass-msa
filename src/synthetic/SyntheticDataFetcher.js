@@ -1,4 +1,4 @@
-import { TILE_BINS, resolutions, rowName } from './field.js';
+import { APPROXIMATE_ABOVE, TILE_BINS, resolutions, rowName } from './field.js';
 
 const stats = (window.__msaFetchStats = window.__msaFetchStats || {
   requests: 0,
@@ -32,6 +32,9 @@ class SyntheticFetcher {
       max_pos: [columns],
       shape: [rows, columns],
       rowNames: Array.from({ length: rows }, (_, r) => rowName(r)),
+      // Past this many columns per bin the track warns that colors are approximate.
+      // A tile server built with `clodius aggregate msa` is exact at every level.
+      approximateAbove: APPROXIMATE_ABOVE,
     };
     // Deferred so the track's constructor finishes before the first refreshTiles().
     Promise.resolve().then(() => callback?.(info, 'synthetic'));

@@ -1,12 +1,12 @@
 import register from 'higlass-register';
 
 import MsaTrack from './MsaTrack.js';
+import ServerDataFetcher from './server/ServerDataFetcher.js';
 import SyntheticDataFetcher from './synthetic/SyntheticDataFetcher.js';
 
 register({ track: MsaTrack, config: MsaTrack.config });
-register(
-  { dataFetcher: SyntheticDataFetcher, config: SyntheticDataFetcher.config },
-  { pluginType: 'dataFetcher' },
-);
+for (const fetcher of [SyntheticDataFetcher, ServerDataFetcher]) {
+  register({ dataFetcher: fetcher, config: fetcher.config }, { pluginType: 'dataFetcher' });
+}
 
-export { MsaTrack, SyntheticDataFetcher };
+export { MsaTrack, ServerDataFetcher, SyntheticDataFetcher };

@@ -17,15 +17,3 @@ const smoothstep = (t) => {
 export function mismatchEmphasis(columnsPerPixel, fadeStart = 1, fadeEnd = 16) {
   return smoothstep((columnsPerPixel - fadeStart) / (fadeEnd - fadeStart));
 }
-
-/**
- * How much neighbouring bins are blended along x, 0 (hard edges) to 1 (linear).
- *
- * Bins wider than a couple of pixels read as blocks, and the blocks are re-cut every
- * time the zoom level changes, which is most of what makes the change look abrupt.
- * Narrow bins stay sharp instead, because there a single bin can be the only trace
- * left of a hotspot.
- */
-export function binSmoothing(pixelsPerBin, fadeStart = 1, fadeEnd = 3) {
-  return smoothstep((pixelsPerBin - fadeStart) / (fadeEnd - fadeStart));
-}

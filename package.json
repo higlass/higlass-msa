@@ -12,16 +12,18 @@
     "build": "vite build",
     "spike": "node scripts/spike-bench.mjs",
     "test": "node --test \"test/*.test.js\"",
-    "test:browser": "node scripts/test-vertical-zoom.mjs && node scripts/test-row-labels.mjs && node scripts/test-label-importance.mjs && node scripts/test-sort-by-base.mjs"
+    "test:browser": "node scripts/test-vertical-zoom.mjs && node scripts/test-row-labels.mjs && node scripts/test-label-importance.mjs && node scripts/test-sort-by-base.mjs && node scripts/test-resize.mjs"
   },
   "dependencies": {
     "higlass": "2.3.5",
     "higlass-register": "0.3.0",
     "pixi.js": "^6.5.10",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react": "^17.0.2",
+    "react-dom": "^17.0.2"
   },
   "devDependencies": {
+    "d3-scale-chromatic": "^3.1.1",
+    "higlass-multivec": "^0.4.3",
     "playwright-core": "^1.64.1",
     "vite": "^6.0.0"
   }

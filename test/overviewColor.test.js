@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { binSmoothing, mismatchEmphasis } from '../src/columnView.js';
+import { mismatchEmphasis } from '../src/columnView.js';
 import { MATCH_RGB, MISMATCH_RGB } from '../src/palette.js';
+import { OVERVIEW_FRAGMENT } from '../src/shaders.js';
 import { EXACT_RESOLUTION, TILE_BINS, overviewTile, rawTile } from '../src/synthetic/field.js';
 
 const COLUMNS = 1 << 20;
@@ -43,20 +44,23 @@ function meanColorError(resolution) {
 }
 
 // The point of fix 2: a bin's color is the average of the raw colors beneath it, so
-// zooming out is a downsample rather than a different drawing.
-test('the level next to raw is an exact downsample of the raw colors', () => {
-  const error = meanColorError(EXACT_RESOLUTION);
-  assert.ok(error < 0.5, `resolution ${EXACT_RESOLUTION} error ${error}`);
+// zooming out is a downsample rather than a different drawing. Each level must equal
+// four bins of the level below averaged, which a modelled level does not: it drew
+// resolution 16 as a plaid of row and column stripes with no cells left in it.
+test('every level up to EXACT_RESOLUTION is an exact downsample of the raw colors', () => {
+  assert.ok(EXACT_RESOLUTION >= 16, 'the level two steps out of raw must be exact');
+  for (let resolution = 4; resolution <= EXACT_RESOLUTION; resolution *= 4) {
+    const error = meanColorError(resolution);
+    assert.ok(error < 0.5, `resolution ${resolution} error ${error}`);
+  }
 });
 
 // Coarser levels are modelled from the field's rates, so a single bin wanders from
-// the cells it covers. The average over a tile must stay close, and must tighten as
-// bins grow, because then each bin averages more cells.
-test('modelled bins stay near the raw average and tighten as bins grow', () => {
-  const errors = [16, 64, 256].map(meanColorError);
-  assert.ok(errors[0] < 10, `resolution 16 error ${errors[0]}`);
-  assert.ok(errors[1] < errors[0], `${errors[1]} should beat ${errors[0]}`);
-  assert.ok(errors[2] < errors[1], `${errors[2]} should beat ${errors[1]}`);
+// the cells it covers. The average over a tile must stay close.
+test('modelled bins stay near the raw average', () => {
+  const resolution = EXACT_RESOLUTION * 4;
+  const error = meanColorError(resolution);
+  assert.ok(error < 10, `resolution ${resolution} error ${error}`);
 });
 
 test('a bin is never drawn outside the range its own colors span', () => {
@@ -195,10 +199,12 @@ test('emphasis does not jump when HiGlass steps to the next zoom level', () => {
   }
 });
 
-test('bins are blended only once they are wide enough to look blocky', () => {
-  assert.equal(binSmoothing(0.2), 0);
-  assert.equal(binSmoothing(1), 0);
-  assert.equal(binSmoothing(3), 1);
-  assert.equal(binSmoothing(40), 1);
-  assert.ok(binSmoothing(2) > 0 && binSmoothing(2) < 1);
+// A bin must stay one flat block however wide it is drawn. Blending it into its
+// neighbours smeared cells sideways, worst at four pixels per bin.
+test('the overview shader never blends a bin into its neighbour', () => {
+  assert.ok(!OVERVIEW_FRAGMENT.includes('uSmooth'));
+  assert.equal(OVERVIEW_FRAGMENT.match(/texture2D/g).length, 2);
+  for (const call of OVERVIEW_FRAGMENT.match(/texture2D\([^)]*\)/g)) {
+    assert.ok(call.endsWith('vUv)'), `${call} samples somewhere other than this bin`);
+  }
 });

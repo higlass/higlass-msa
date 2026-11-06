@@ -1,9 +1,9 @@
-import { binSmoothing, mismatchEmphasis } from './columnView.js';
+import { mismatchEmphasis } from './columnView.js';
 import { cellAt, tooltipHtml } from './hover.js';
 import { buildLabelIndex } from './labelLevels.js';
 import { PALETTE_RGB, SYMBOLS } from './palette.js';
 import { MAX_LABEL_BOX_PX, labelBoxPx, labelFontSize, labelText, labelY, visibleLabels } from './rowLabels.js';
-import { clampOffset, letterAlpha, panRows, visibleRows, zoomRows } from './rowView.js';
+import { clampOffset, fitRowHeight, letterAlpha, panRows, visibleRows, zoomRows } from './rowView.js';
 import { OVERVIEW_FRAGMENT, RAW_FRAGMENT, VERTEX } from './shaders.js';
 import { NO_SORT_KEY, sortKey, sourceRow } from './sortRows.js';
 
@@ -87,6 +87,55 @@ function createTrackClass(HGC) {
       this.pMain.addChild(this.labelLayer);
       this.labelCanvas = document.createElement('canvas');
       this.labelRows = [];
+
+      this.warningLayer = new PIXI.Container();
+      this.warningLayer.zIndex = LABEL_LAYER_Z + 1;
+      this.warningLayer.visible = false;
+      this.warningBox = new PIXI.Graphics();
+      this.warningText = new PIXI.Text('', {
+        fontFamily: 'Helvetica, Arial, sans-serif',
+        fontSize: 12,
+        fill: '#5c3b00',
+      });
+      this.warningLayer.addChild(this.warningBox, this.warningText);
+      this.pMain.addChild(this.warningLayer);
+    }
+
+    /** Columns per bin of the zoom level HiGlass is drawing now. */
+    currentResolution() {
+      if (!this.tilesetInfo?.resolutions || !this._xScale) return null;
+      const descending = this.tilesetInfo.resolutions.map(Number).sort((a, b) => b - a);
+      return descending[this.calculateZoomLevel()] ?? null;
+    }
+
+    /**
+     * A data source whose coarse levels are only an approximation says from where on
+     * in `approximateAbove`. Past that the colors are not the average of the cells,
+     * so say so rather than let them pass for the real thing.
+     */
+    updateZoomWarning() {
+      const limit = this.tilesetInfo?.approximateAbove;
+      const resolution = this.currentResolution();
+      const show = Number.isFinite(limit) && resolution !== null && resolution > limit;
+      this.warningLayer.visible = show;
+      if (!show) return;
+      const text =
+        `Zoomed out past ${limit} columns per bin (now ${resolution.toLocaleString('en-US')}). ` +
+        'Synthetic data only approximates these colors; use a tile server for exact ones.';
+      const [width] = this.dimensions ?? [0];
+      if (text !== this.warningText.text || width !== this.warningWidth) {
+        this.warningText.text = text;
+        this.warningWidth = width;
+        const pad = 6;
+        this.warningText.position.set(pad, pad - 1);
+        this.warningBox
+          .clear()
+          .lineStyle(1, 0xd9a400, 1)
+          .beginFill(0xfff4cc, 0.94)
+          .drawRoundedRect(0, 0, this.warningText.width + 2 * pad, this.warningText.height + 2 * pad - 2, 4)
+          .endFill();
+        this.warningLayer.position.set(Math.max(4, Math.round((width - this.warningLayer.width) / 2)), 4);
+      }
     }
 
     /** The data row a row of the track shows, which differs from it only when sorted. */
@@ -243,14 +292,16 @@ function createTrackClass(HGC) {
           cellZoom = d.z;
         }
       }
-      return tooltipHtml(this.rowName(row), cell);
+      const reference = this.tilesetInfo.coordinates === 'reference' ? this.tilesetInfo.reference?.name : null;
+      return tooltipHtml(this.rowName(row), cell, reference, this.tilesetInfo.xOffset ?? 0);
     }
 
     /** The column under a track position, or null if there isn't one. */
     columnAt(trackX) {
       if (!this.tilesetInfo || !this._xScale || Number.isNaN(trackX)) return null;
       const column = Math.floor(this._xScale.invert(trackX));
-      return column >= 0 && column < this.tilesetInfo.shape[1] ? column : null;
+      const first = this.tilesetInfo.xOffset ?? 0;
+      return column >= first && column < first + this.tilesetInfo.shape[1] ? column : null;
     }
 
     /** Right-click menu: sorting the rows by the column clicked, as in higlass-pileup. */
@@ -332,16 +383,28 @@ function createTrackClass(HGC) {
 
     rowGeometry() {
       const { rowHeight = 1, maxRowHeight = DEFAULT_MAX_ROW_HEIGHT } = this.options;
+      const rows = this.tilesetInfo?.shape[0] ?? 0;
+      const height = this.dimensions?.[1] ?? 0;
       return {
-        rowHeight,
+        rowHeight: fitRowHeight(rowHeight, rows, height),
         maxRowHeight,
-        rows: this.tilesetInfo.shape[0],
-        height: this.dimensions?.[1] ?? 0,
+        rows,
+        height,
       };
     }
 
     get rowPx() {
-      return (this.options.rowHeight ?? 1) * this.rowView.k;
+      return this.rowGeometry().rowHeight * this.rowView.k;
+    }
+
+    /**
+     * Keeps the row view in place when the base row height changes (track resized,
+     * rowHeight option changed): the same row stays at the top, scaled to the new height.
+     */
+    rescaleRowView(oldRowPx) {
+      const newRowPx = this.rowPx;
+      if (oldRowPx > 0 && newRowPx !== oldRowPx) this.rowView.offset *= newRowPx / oldRowPx;
+      this.reclampRowView();
     }
 
     /** Shift+wheel, routed here by HiGlass. Enlarges rows around the cursor. */
@@ -432,7 +495,6 @@ function createTrackClass(HGC) {
         uCellPx: new Float32Array([1, 1]),
         uLetterAlpha: 0,
         uEmphasis: 0,
-        uSmooth: 0,
       });
       tile.msaMesh = new PIXI.Mesh(this.quad, shader);
       tile.graphics.addChild(tile.msaMesh);
@@ -464,7 +526,6 @@ function createTrackClass(HGC) {
         // because resolution and bin width step together. Driving the emphasis from it
         // instead of from the level keeps the look continuous across the step.
         mesh.shader.uniforms.uEmphasis = mismatchEmphasis(d.resolution / pxPerBin);
-        mesh.shader.uniforms.uSmooth = binSmoothing(pxPerBin);
       }
     }
 
@@ -482,6 +543,7 @@ function createTrackClass(HGC) {
       super.draw();
       for (const tile of Object.values(this.fetchedTiles)) this.positionTile(tile);
       this.updateRowLabels();
+      this.updateZoomWarning();
     }
 
     zoomed(newXScale, newYScale) {
@@ -498,26 +560,31 @@ function createTrackClass(HGC) {
     }
 
     setDimensions(newDimensions) {
+      const oldRowPx = this.dimensions && this.tilesetInfo ? this.rowPx : 0;
       super.setDimensions(newDimensions);
       if (this.tilesetInfo) {
-        this.reclampRowView();
+        this.rescaleRowView(oldRowPx);
         this.refreshTiles();
-        this.updateRowLabels();
+        this.draw();
       }
     }
 
     /** The options can already carry a sort, so the order is wanted straight away. */
     tilesetInfoReceived() {
+      // Before the row count is known, rows are drawn at the plain rowHeight.
+      const oldRowPx = (this.options.rowHeight ?? 1) * this.rowView.k;
       super.tilesetInfoReceived();
+      this.rescaleRowView(oldRowPx);
       this.updateRowOrder();
     }
 
     rerender(options, force) {
+      const oldRowPx = this.tilesetInfo ? this.rowPx : 0;
       super.rerender(options, force);
       this.options = options;
       this.updateRowOrder();
       if (this.tilesetInfo) {
-        this.reclampRowView();
+        this.rescaleRowView(oldRowPx);
         this.refreshTiles();
       }
       this.draw();
@@ -527,6 +594,7 @@ function createTrackClass(HGC) {
       this.wheelEl?.removeEventListener('wheel', this.onWheel, { capture: true });
       this.labelSprite.texture?.destroy(true);
       this.labelLayer.destroy({ children: true });
+      this.warningLayer.destroy({ children: true });
       super.remove();
       this.palette.destroy();
       this.atlas.destroy();

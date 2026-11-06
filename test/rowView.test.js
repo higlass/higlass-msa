@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { clampOffset, letterAlpha, panRows, visibleRows, zoomRows } from '../src/rowView.js';
+import { clampOffset, fitRowHeight, letterAlpha, panRows, visibleRows, zoomRows } from '../src/rowView.js';
 
 const base = { rowHeight: 1, maxRowHeight: 48, rows: 1000, height: 1000 };
 
@@ -52,6 +52,14 @@ test('rows taller than the track at k=1 can be panned', () => {
   const tall = { ...base, rows: 5000 };
   assert.equal(panRows({ k: 1, offset: 0 }, { ...tall, dY: -1200 }).offset, -1200);
   assert.equal(panRows({ k: 1, offset: 0 }, { ...tall, dY: -1e6 }).offset, -4000);
+});
+
+test('rows stretch to fill the track but never below rowHeight', () => {
+  assert.equal(fitRowHeight(1, 100, 300), 3);
+  assert.equal(fitRowHeight(1, 1000, 300), 1);
+  assert.equal(fitRowHeight(4, 100, 300), 4);
+  assert.equal(fitRowHeight(2, 0, 300), 2);
+  assert.equal(fitRowHeight(2, 100, 0), 2);
 });
 
 test('visibleRows covers partially visible rows at both edges', () => {

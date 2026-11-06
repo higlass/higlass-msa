@@ -46,7 +46,6 @@ for (const span of spans) {
       kind: x.tileData.kind,
       res: x.tileData.resolution,
       emphasis: x.msaMesh.shader.uniforms.uEmphasis,
-      smooth: x.msaMesh.shader.uniforms.uSmooth,
       letters: x.msaMesh.shader.uniforms.uLetterAlpha,
     }));
     const [a, b] = t._xScale.domain();

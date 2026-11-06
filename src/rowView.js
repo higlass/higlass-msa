@@ -3,6 +3,15 @@
 //   k       multiplier on the base row height, never below 1
 //   offset  y of the top of row 0, in track pixels, never above 0
 
+/**
+ * Row height at k = 1. Like HiGlass's multivec heatmap, rows stretch to fill the track
+ * height, so the rendered rows grow and shrink with the track. They never go below
+ * `rowHeight`: an alignment taller than that scrolls instead.
+ */
+export function fitRowHeight(rowHeight, rows, height) {
+  return rows > 0 && height > 0 ? Math.max(rowHeight, height / rows) : rowHeight;
+}
+
 export function clampOffset(offset, rowPx, rows, height) {
   const lowest = Math.min(0, height - rows * rowPx);
   return Math.min(0, Math.max(offset, lowest));

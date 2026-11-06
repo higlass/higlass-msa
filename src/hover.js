@@ -35,15 +35,28 @@ export function cellAt(tile, column, row) {
 const percent = (fraction) => `${(fraction * 100).toFixed(1)}%`;
 const count = (n) => n.toLocaleString('en-US');
 
-/** A null cell means the hover is on the label column or the tile hasn't loaded. */
-export function tooltipHtml(name, cell) {
+/**
+ * A null cell means the hover is on the label column or the tile hasn't loaded.
+ * With `reference` (a name such as hg38.chr22), x is a 0-based position on it, shown
+ * 1-based as genome browsers do. `offset` is where the tileset's x = 0 sits on the
+ * view's axis, taken off before showing a position.
+ */
+export function tooltipHtml(name, cell, reference = null, offset = 0) {
   const lines = [`<b>${escapeHtml(name)}</b>`];
+  const where = (firstX, lastX = firstX) => {
+    const [first, last] = [firstX - offset, lastX - offset];
+    return reference
+      ? `${escapeHtml(reference)}:${count(first + 1)}${last > first ? `–${count(last + 1)}` : ''}`
+      : last > first
+        ? `Columns ${count(first)}–${count(last)}`
+        : `Column ${count(first)}`;
+  };
   if (cell?.kind === 'raw') {
-    lines.push(`Column ${count(cell.column)}`);
+    lines.push(where(cell.column));
     const consensus = cell.symbol === 'gap' ? '' : cell.mismatch ? ' (differs from consensus)' : ' (matches consensus)';
     lines.push(`${cell.symbol}${consensus}`);
   } else if (cell?.kind === 'overview') {
-    lines.push(`Columns ${count(cell.firstColumn)}–${count(cell.lastColumn)}`);
+    lines.push(where(cell.firstColumn, cell.lastColumn));
     lines.push(`Non-gap: ${percent(cell.nonGap)}`);
     lines.push(`Mismatch: ${percent(cell.mismatch)}, peak ${percent(cell.peak)}`);
   }

@@ -44,26 +44,16 @@ void main() {
 // and the same bin at its peak mismatch rate. uEmphasis slides between them so rare
 // mismatches survive aggregation, and reaches 0 where the raw level takes over.
 //
-// Bins aggregate columns only; rows are never merged. So neighbours are blended along
-// x by hand rather than with a LINEAR sampler, which would also smear sequences into
-// each other. uSmooth of 1 is linear, 0 is hard-edged.
+// Bins are never blended into their neighbours. Sampling is NEAREST, so a bin is one
+// flat block of color with hard edges, however wide it is drawn.
 export const OVERVIEW_FRAGMENT = `
 precision highp float;
 varying vec2 vUv;
 uniform sampler2D uMean;
 uniform sampler2D uPeak;
-uniform vec2 uDims;
 uniform float uEmphasis;
-uniform float uSmooth;
 void main() {
-  float x = vUv.x * uDims.x - 0.5;
-  float left = floor(x);
-  float du = 1.0 / uDims.x;
-  vec2 uvA = vec2((left + 0.5) * du, vUv.y);
-  vec2 uvB = vec2((left + 1.5) * du, vUv.y);
-  float f = x - left;
-  float t = clamp(0.5 + (f - 0.5) / max(uSmooth, 0.001), 0.0, 1.0);
-  vec3 mean = mix(texture2D(uMean, uvA).rgb, texture2D(uMean, uvB).rgb, t);
-  vec3 peak = mix(texture2D(uPeak, uvA).rgb, texture2D(uPeak, uvB).rgb, t);
+  vec3 mean = texture2D(uMean, vUv).rgb;
+  vec3 peak = texture2D(uPeak, vUv).rgb;
   gl_FragColor = vec4(mix(mean, peak, uEmphasis), 1.0);
 }`;
